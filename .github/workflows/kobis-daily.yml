@@ -2,6 +2,8 @@ name: KOBIS 일별 박스오피스 이어 붙이기
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 1 * * *"      # UTC 1:17 = 한국 시간 오전 10:17 (정각을 피한 분)
 
 permissions:
   contents: write
