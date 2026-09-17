@@ -6,6 +6,7 @@
 import csv
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -38,11 +39,18 @@ if target in have:
     print(f"{target}은 이미 저장되어 있어 다시 저장하지 않습니다.")
     sys.exit(0)
 
-try:
-    res = requests.get(URL, params={"key": KEY, "targetDt": target}, timeout=15)
-    js = res.json()
-except Exception as e:
-    print(f"요청 실패: {type(e).__name__}")
+js = None
+for attempt in range(1, 4):                     # 일시적인 연결 실패는 20초 쉬고 최대 세 번 다시 시도
+    try:
+        res = requests.get(URL, params={"key": KEY, "targetDt": target}, timeout=15)
+        js = res.json()
+        break
+    except Exception as e:
+        print(f"요청 실패({attempt}/3): {type(e).__name__}")
+        if attempt < 3:
+            time.sleep(20)
+if js is None:
+    print("세 번 모두 실패해 종료합니다. 잠시 뒤 다시 실행해 주세요.")
     sys.exit(1)
 if "faultInfo" in js:
     print(f"응답 오류: {js['faultInfo'].get('message', '')}")
