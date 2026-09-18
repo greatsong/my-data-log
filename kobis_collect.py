@@ -31,7 +31,10 @@ START_DATE = os.environ.get("START_DATE", "20160918")         # 수집 시작일
 MAX_REQUESTS = int(os.environ.get("MAX_REQUESTS", "2800"))   # 한 번 실행에 보낼 요청 횟수 상한(재시도 포함).
                                                              # 키의 이용 한도와 같은 키의 다른 사용량을 고려해 정한다.
 RETRIES = 3          # 한 날짜당 최대 시도 횟수(연결 실패 때)
-RETRY_WAIT = 20      # 재시도 전 기다리는 초
+MAX_SECONDS = int(os.environ.get("MAX_SECONDS", "16200"))    # 이번 실행에 쓸 시간 상한(초). 기본 4시간 30분.
+                                                             # 깃허브 액션 작업은 6시간이 지나면 강제 종료되므로,
+                                                             # 그 전에 스스로 멈춰 받은 기록을 저장소에 반영할 시간을 남긴다.
+RETRY_WAIT = 5       # 재시도 전 기다리는 초
 PAUSE = 0.2          # 요청 사이 잠깐 쉬기
 # ──────────────────────────────────────────────────────────────
 
@@ -67,6 +70,18 @@ while d <= yesterday:
 print(f"수집 기간 {start:%Y-%m-%d} ~ {yesterday:%Y-%m-%d} / 이미 저장한 날짜 {len(have)}일 / "
       f"아직 없는 날짜 {len(missing)}일 / 이번 실행 요청 횟수 상한 {MAX_REQUESTS}회")
 
+def save_all():
+    """받은 기록을 날짜·순위순으로 정렬해 저장한다. 도중에 멈춰도 여기까지는 남는다."""
+    if not new_rows:
+        return
+    all_rows = saved_rows + new_rows
+    all_rows.sort(key=lambda r: (r[0], int(r[1]) if str(r[1]).isdigit() else 99))
+    os.makedirs("data", exist_ok=True)
+    with open(OUT, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(COLS)
+        w.writerows(all_rows)
+
 requests_sent = 0
 new_rows = []          # 이번 실행에서 정상 확인한 날짜의 행(한 날짜를 한 묶음으로)
 added_days = []
@@ -75,9 +90,14 @@ stopped_by_limit = False
 stopped_by_api = False
 consecutive_failures = 0
 
+started = time.monotonic()
+stopped_by_time = False
 for s in missing:
     if requests_sent >= MAX_REQUESTS:
         stopped_by_limit = True
+        break
+    if time.monotonic() - started >= MAX_SECONDS:
+        stopped_by_time = True
         break
     js = None
     for attempt in range(1, RETRIES + 1):
@@ -85,7 +105,7 @@ for s in missing:
             break
         requests_sent += 1
         try:
-            res = requests.get(URL, params={"key": KEY, "targetDt": s}, timeout=15)
+            res = requests.get(URL, params={"key": KEY, "targetDt": s}, timeout=10)
             js = res.json()
             break
         except Exception as e:                       # 주소(키 포함)는 출력하지 않는다
@@ -117,18 +137,11 @@ for s in missing:
     added_days.append(s)
     consecutive_failures = 0
     if len(added_days) % 100 == 0:
-        print(f"진행: {len(added_days)}일 확인, 요청 {requests_sent}회")
+        save_all()   # 중간 저장(도중에 멈춰도 여기까지는 남는다)
+        print(f"진행: {len(added_days)}일 확인, 요청 {requests_sent}회, 여기까지 저장")
     time.sleep(PAUSE)
 
-# 날짜·순위순으로 정렬해 저장(기존 행 + 새 행)
-if new_rows:
-    all_rows = saved_rows + new_rows
-    all_rows.sort(key=lambda r: (r[0], int(r[1]) if str(r[1]).isdigit() else 99))
-    os.makedirs("data", exist_ok=True)
-    with open(OUT, "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(COLS)
-        w.writerows(all_rows)
+save_all()   # 마지막으로 한 번 더 저장
 
 still_missing = len(missing) - len(added_days)
 print(f"요청 횟수 {requests_sent}회 / 새로 저장한 날짜 {len(added_days)}일({len(new_rows)}행) / "
@@ -136,5 +149,7 @@ print(f"요청 횟수 {requests_sent}회 / 새로 저장한 날짜 {len(added_da
       f"아직 없는 날짜 {still_missing}일")
 if stopped_by_limit:
     print("요청 횟수 상한에 도달해 멈췄습니다. 남은 날짜는 다음 실행에서 이어받습니다.")
+if stopped_by_time:
+    print(f"수집 시간 상한({MAX_SECONDS}초)에 도달해 멈췄습니다. 남은 날짜는 다음 실행에서 이어받습니다.")
 if not added_days and missing:
     sys.exit(1)   # 받을 날짜가 있었는데 하나도 저장하지 못했으면 실패로 알린다
